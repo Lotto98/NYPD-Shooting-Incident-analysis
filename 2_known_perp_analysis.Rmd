@@ -1,0 +1,835 @@
+---
+title: "Known perpetrator shootings analysis"
+author: "Michele Lotto"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Requirements
+
+```{r requirements, results='hide'}
+requirements=c("summarytools", "pROC", "glmnetUtils", "dplyr", "car", "effects", "gridExtra", "grid", "MASS","e1071", "mgcv")
+
+for (req in requirements){
+  if (!require(req, character.only = TRUE)){
+      install.packages(req)
+  }
+}
+```
+
+```{r, include=FALSE}
+st_options(headings = FALSE)
+```
+
+
+# Loading data
+
+```{r}
+shootings <- readRDS("data/shootings_known.Rda")
+print(dfSummary(shootings), method="render")
+```
+
+
+# Train/Test split
+
+```{r}
+set.seed(2)
+
+train <- sample(nrow(shootings), 0.80*nrow(shootings))
+test <- (-train)
+
+shootings.train <- subset(shootings[train,], select = -murder )
+shootings.test <- subset(shootings[test,], select = -murder )
+
+dim(shootings.train)
+dim(shootings.test)
+```
+
+# Logistic regression
+
+Let's start with a model with all the predictors.
+
+```{r}
+glm.full <- glm(murder_prob ~ ., data=shootings.train, family=binomial)
+summary(glm.full)
+```
+
+As we can see:
+
+- the day period is strongly significant for the victim survival.
+
+- the day of the year, the year, the day of the week, the COVID periods and the working hour are not significant.
+
+- for some reason Latitude is slightly significant but Longitude is not.
+
+- the city location is not significant at all.
+
+- the perpetrator age is significant.
+
+- the victim age is significant as expected.
+
+- sex predictors for both perpetrator and victim are not significant.
+
+- perpetrator race predictors is significant, while victim race is slightly significant.
+
+- the presence of addiction victims is strongly significant.
+
+- the jurisdiction is strongly significant.
+
+First check multicollinearity:
+
+```{r}
+vif(glm.full)
+```
+
+As we can see `city_location` predictors has an extremely large VIF and it is also not significant, we should remove it.
+
+```{r}
+glm.full <- update(glm.full, .~.-city_location)
+vif(glm.full)
+```
+
+Now we check for influential points:
+
+```{r}
+influenceIndexPlot(glm.full, vars = "C")
+```
+
+The cook's distance plot does not give indication of influential points.
+
+Now let's create a model with only significant predictors:
+
+```{r}
+glm.sig <- glm(murder_prob ~ day_period + perp_age + vic_age + perp_race+ vic_race + other_victims + jurisdiction, data=shootings.train, family=binomial)
+summary(glm.sig)
+```
+```{r}
+AIC(glm.sig,glm.full)
+```
+
+The AIC indicates that `glm.sig` is better than the full model. Also the estimate coefficients are more interpretable.
+
+Now we check for influential points:
+
+```{r}
+influenceIndexPlot(glm.sig, vars = "C")
+```
+
+The cook's distance plot does not give indication of influential points.
+
+## Interaction terms
+
+Now let's take a look at some interactions between victim and perpetrator. In particular we add to `glm.sig` the following interactions:
+
+- perpetrator age and victim age
+- perpetrator race and victim race
+
+```{r}
+glm.sign.inter <- update(glm.sig, . ~ . + perp_age:vic_age + perp_race:vic_race)
+summary(glm.sign.inter)
+```
+
+As we can see the interaction between perpetrator race and victims race is slightly significant, while between perpetrator age and victim age is not. Let's remove it.
+
+```{r}
+glm.sign.inter <- update(glm.sign.inter, . ~ . - perp_age:vic_age)
+summary(glm.sign.inter)
+```
+
+```{r}
+AIC(glm.sign.inter, glm.sig)
+```
+
+Since the coefficient of the interaction are significant and the AIC increase is negligible (only one unit) we prefer the model with interactions.
+
+Now let's try adding interaction terms to the full model. Now let's add the following interactions:
+
+- perpetrator age and victim age
+- perpetrator race and victim race
+- perpetrator sex and victim sex
+- year and day of the year
+
+```{r}
+glm.full.inter <- update(glm.full, . ~ . + perp_race:vic_race + perp_age:vic_age + perp_sex:vic_sex + year:day_year)
+summary(glm.full.inter)
+```
+
+As before the interaction between perpetrator race and victim race is significant, the interaction between perpetrator age and victim age is not significant. Furthermore the interaction between perpetrator sex and victim sex and the interaction between year and day of the year are not significant. Let's remove the not significant interactions:
+
+```{r}
+glm.full.inter <- update(glm.full.inter, . ~ . - perp_age:vic_age - perp_sex:vic_sex - year:day_year)
+summary(glm.full.inter)
+```
+
+Check AIC:
+
+```{r}
+AIC(glm.full)
+AIC(glm.full.inter)
+```
+
+As before the AIC increase is negligible and the interaction between perpetrator and victim races is significant, thus we prefer this model compared to the full model.
+
+In summary the models with interaction are preferable. Now let's compare the two models with interaction:
+
+```{r}
+AIC(glm.full.inter)
+AIC(glm.sign.inter)
+```
+
+In terms of AIC we prefer `glm.sign.inter`: the model with only significant predictors and the interaction term.
+
+Let's interpret what the best model in terms of AIC tell us.
+
+```{r}
+summary(glm.sign.inter)
+```
+
+Let's plot the effects for all the interactionless variables:
+
+```{r, fig.height=15, fig.width=15}
+a <- plot( effect("day_period", glm.sign.inter),rescale.axis=FALSE, ylab="Probability of murder")
+b <- plot( effect("perp_age", glm.sign.inter), rescale.axis=FALSE, ylab="Probability of murder")
+c <-plot( effect("vic_age", glm.sign.inter), rescale.axis=FALSE, ylab="Probability of murder")
+d <-plot( effect("other_victims", glm.sign.inter), rescale.axis=FALSE, ylab="Probability of murder")
+e <-plot( effect("jurisdiction", glm.sign.inter), rescale.axis=FALSE, ylab="Probability of murder")
+
+grid.arrange(a,b,c,d,e , top=textGrob("Interactionless variables effect plots",gp=gpar(fontsize=20,font=3)))
+```
+
+As we can see:
+
+- during the early hours of the day it is less likely for the victim to survive a shooting incident.
+
+- the more the perpetrator is old, the less likely is for the victim to survive a shooting incident.
+
+- the more the victim is old, the less likely is for him/her to survive a shooting incident.
+
+- as the number of other victims increases, the less likely is for the victim to survive a shooting incident.
+
+- shootings incident with patrol jurisdiction have a higher probability of survival.
+
+```{r, fig.height=10, fig.width=15}
+plot( effect("perp_race:vic_race", glm.sign.inter), rescale.axis=FALSE, ylab="Probability of murder")
+```
+
+As we can see if the victim is "Black Hispanic", "White Hispanic" or "Black" the probability of survival doesn't change much; while if the victim is "ASIAN" or "WHITE", the probability of survival decreases if the shooter is also "ASIAN" or "WHITE.
+
+## Model comparison
+
+Let's compare all the models done so far in terms of prediction power to be able to compare them with other types of models:
+
+```{r}
+glm.full.pred <- predict(glm.full, newdata = shootings.test, type = "response")
+
+glm.sig.pred <- predict(glm.sig, newdata = shootings.test, type = "response")
+
+glm.full.inter.pred <- predict(glm.full.inter, newdata = shootings.test, type = "response")
+
+glm.sig.inter.pred <- predict(glm.sign.inter, newdata = shootings.test, type = "response")
+```
+
+Select the best threshold via ROC curve:
+
+```{r}
+par(mfrow=c(2,2))
+
+glm.full.roc <- roc(shootings.test$murder_prob ~ glm.full.pred, plot=TRUE, print.auc=TRUE, main="glm.full ROC curve")
+glm.sig.roc <- roc(shootings.test$murder_prob ~ glm.sig.pred, plot=TRUE, print.auc=TRUE, main="glm.sig ROC curve")
+
+glm.full.inter.roc <- roc(shootings.test$murder_prob ~ glm.full.inter.pred, plot=TRUE, print.auc=TRUE, main="glm.full.inter ROC curve")
+glm.sig.inter.roc <- roc(shootings.test$murder_prob ~ glm.sig.inter.pred, plot=TRUE, print.auc=TRUE, main="glm.sign.inter ROC curve")
+```
+
+As we can see, the ROC curve is essentially the same for all the models. 
+
+```{r}
+glm.full.metrics <- coords(glm.full.roc, x="best", ret="all")
+glm.sig.metrics <- coords(glm.sig.roc, x="best", ret="all")
+glm.full.inter.metrics <- coords(glm.full.inter.roc, x="best", ret="all")
+glm.sig.inter.metrics <- coords(glm.sig.inter.roc, x="best", ret="all")
+```
+
+```{r}
+row.names(glm.full.metrics) <- "Full model"
+row.names(glm.sig.metrics) <- "Significant predictors model"
+row.names(glm.full.inter.metrics) <- "Full model with interaction"
+row.names(glm.sig.inter.metrics) <- "Significant predictors model with interaction"
+
+metrics <- rbind(glm.full.metrics, glm.sig.metrics, glm.full.inter.metrics, glm.sig.inter.metrics)
+```
+
+Now let's compare:
+
+1) specificity
+```{r}
+(metrics %>% arrange(desc(specificity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The best model in terms of specificity is "Significant predictors model with interaction".
+
+2) sensitivity
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The best model in terms of sensitivity is "Significant predictors model".
+
+3) accuracy
+```{r}
+(metrics %>% arrange(desc(accuracy)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The best model in terms of accuracy is "Significant predictors model with interaction".
+
+Since the response in unbalanced:
+
+```{r}
+print(dfSummary(shootings.test[,"murder_prob"]), method="render")
+```
+
+The best model in terms of prediction power should maximize its ability to correctly classify murders. For this reason i should choose the model with higher sensitivity and acceptable specificity (>0.5): "Full model".
+
+#### Confusion Matrixes
+
+```{r}
+confusion_matrix <- function(pred_prob, threshold){
+  pred_class <- pred_prob > threshold
+  table(preds=pred_class, true=as.logical(shootings.test$murder_prob))
+}
+```
+
+1) Full model
+
+```{r}
+glm.full.metrics[, c("specificity", "sensitivity", "accuracy")]
+```
+
+
+```{r}
+confusion_matrix(glm.full.pred, glm.full.metrics$threshold)
+```
+
+2) Full model with interaction
+
+```{r}
+glm.full.inter.metrics[, c("specificity", "sensitivity", "accuracy")]
+```
+
+
+```{r}
+confusion_matrix(glm.full.inter.pred, glm.full.inter.metrics$threshold)
+```
+
+3) Significant predictors model
+
+```{r}
+glm.sig.metrics[, c("specificity", "sensitivity", "accuracy")]
+```
+
+
+```{r}
+confusion_matrix(glm.sig.pred, glm.sig.metrics$threshold)
+```
+
+4) Significant predictors model with interaction
+
+```{r}
+glm.sig.inter.metrics[, c("specificity", "sensitivity", "accuracy")]
+```
+
+
+```{r}
+confusion_matrix(glm.sig.inter.pred, glm.sig.inter.metrics$threshold)
+```
+
+## Model selection
+
+Now let's apply automatic model selection to identity the best model.
+
+### Stepwiese logistic regression
+
+We use the model which has the most predictors and interaction terms as starting point.
+
+```{r}
+model <- glm(murder_prob ~ . + perp_race:vic_race + perp_age:vic_age + perp_sex:vic_sex + year:day_year, family = binomial, data = shootings.train)
+glm.step <- step(model, direction = "both", trace = FALSE)
+```
+
+```{r}
+summary(glm.step)
+```
+```{r}
+AIC(glm.full, glm.sig, glm.full.inter, glm.sign.inter, glm.step) %>% arrange(AIC)
+```
+
+In terms of AIC the "Step model" is slightly better.
+
+#### Model comparison
+
+Let's compare the step model with the models done so far.
+
+```{r}
+glm.step.pred <- predict(glm.step, newdata = shootings.test, type = "response")
+```
+
+```{r}
+glm.step.roc <- roc(shootings.test$murder_prob ~ glm.step.pred, plot=TRUE, print.auc=TRUE, main="Step model ROC curve")
+```
+
+```{r}
+glm.step.metrics <- coords(glm.step.roc, x="best", ret="all")
+rownames(glm.step.metrics) <- "Step model"
+```
+
+```{r}
+metrics <- rbind(metrics, glm.step.metrics)
+```
+
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The "Step model" is slightly better in terms of sensitivity compared to the best overall model so far ("Full model") and has an acceptable specificity: it is the new best overall model.
+
+Confusion matrix for step model:
+
+```{r}
+confusion_matrix(glm.step.pred, glm.step.metrics$threshold)
+```
+
+
+### Lasso Regression
+
+Now we try with lasso regression. As before we use as starting point the formula with all predictors and interactions term.
+
+```{r}
+lasso.mod <- glmnet(murder_prob ~ . + perp_race:vic_race + perp_age:vic_age + perp_sex:vic_sex + year:day_year, data=shootings.train, alpha=1, family = "binomial")
+plot(lasso.mod, main='Path plot of the Lasso estimates\n\n')
+```
+
+We choose lambda using cross validation:
+
+```{r}
+lasso.cv <- cv.glmnet(murder_prob ~ . + perp_race:vic_race + perp_age:vic_age + perp_sex:vic_sex + year:day_year, data=shootings.train, alpha=1, family = "binomial")
+plot(lasso.cv)
+```
+
+Lasso gives us the choice between two values of lambda:
+
+- `lambda.min`: lambda of minimum mean cross-validated error.
+
+- `lambda.1se`: largest value of lambda such that error is within 1 standard error of the cross-validated errors for `lambda.min.`
+
+We explore both paths.
+
+#### 1se lambda
+
+```{r}
+plot(lasso.mod, xvar = "lambda", main='Path plot of the Lasso estimates with 1se lambda\n\n')
+abline(v = log(lasso.cv$lambda.1se), lty="dashed")
+```
+
+The remaining coefficients are:
+
+```{r}
+lasso.1se.coef <- coef(lasso.mod,  s=lasso.cv$lambda.1se)
+
+lasso.1se.coef[lasso.1se.coef[,1]!=0,]
+```
+
+#### min lambda
+
+```{r}
+plot(lasso.mod, xvar = "lambda", main='Path plot of the Lasso estimates with min lambda\n\n')
+abline(v =log(lasso.cv$lambda.min), lty="dashed")
+```
+
+The remaining coefficients are:
+
+```{r}
+lasso.min.coef <- coef(lasso.mod,  s=lasso.cv$lambda.min)
+lasso.min.coef[lasso.min.coef[,1]!=0,]
+```
+
+#### Model comparison
+
+Now let's compare prediction performance of lasso models.
+
+```{r}
+lasso.1se.pred <- predict(lasso.mod, s=lasso.cv$lambda.1se, newdata = shootings.test, type = "response")
+lasso.min.pred <- predict(lasso.mod, s=lasso.cv$lambda.min, newdata = shootings.test, type = "response")
+```
+
+```{r, fig.width=10, fig.height=5}
+par(mfrow=c(1,2))
+
+lasso.1se.roc <- roc(shootings.test$murder_prob ~ lasso.1se.pred, plot=TRUE, print.auc=TRUE, main="Lasso 1se lambda ROC curve")
+lasso.min.roc <- roc(shootings.test$murder_prob ~ lasso.min.pred, plot=TRUE, print.auc=TRUE, main="Lasso min lambda ROC curve")
+```
+According to the ROC curve the Lasso model with min lambda is slightly better than the one with 1se lambda.
+
+```{r}
+lasso.1se.metrics <- coords(lasso.1se.roc, x="best", ret="all")
+row.names(lasso.1se.metrics) <- "Lasso 1se lambda"
+
+lasso.min.metrics <- coords(lasso.min.roc, x="best", ret="all")
+row.names(lasso.min.metrics) <- "Lasso min lambda"
+```
+
+```{r}
+metrics <- rbind(metrics, lasso.1se.metrics, lasso.min.metrics)
+```
+
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+As we can see "Lasso 1se lambda" is the best model in terms of sensitivity now. Unfortunately it is also the worst model in terms of accuracy and specificity. The model "Lasso min lambda" is the worst model in terms of sensitivity but has the higher specificity and accuracy.
+
+Confusion Matrix for `lambda.1se`:
+
+```{r}
+confusion_matrix(lasso.1se.pred, lasso.1se.metrics$threshold)
+```
+
+Confusion Matrix for `lambda.min`:
+
+```{r}
+confusion_matrix(lasso.min.pred, lasso.min.metrics$threshold)
+```
+
+### Ridge logistic regression
+
+Now we try with ridge regression. As before we use as starting point the formula with all predictors and interaction term.
+
+```{r}
+ridge.mod <- glmnet(murder_prob ~ . + perp_race:vic_race + perp_age:vic_age + perp_sex:vic_sex + year:day_year, data=shootings.train, alpha=0, family = binomial)
+plot(ridge.mod, main='Path plot of the Ridge estimates\n\n')
+```
+
+We choose lambda using cross validation:
+
+```{r}
+ridge.cv <- cv.glmnet(murder_prob ~ . + perp_race:vic_race + perp_age:vic_age + perp_sex:vic_sex + year:day_year, data=shootings.train, alpha=0, family = binomial)
+plot(ridge.cv)
+```
+
+Ridge (as Lasso) gives us the choice between two values of lambda:
+
+- `lambda.min`: lambda of minimum mean cross-validated error.
+
+- `lambda.1se`: largest value of lambda such that error is within 1 standard error of the cross-validated errors for `lambda.min.`
+
+We explore both paths.
+
+#### 1se lambda
+
+```{r}
+plot(ridge.mod, xvar = "lambda", main='Path plot of the Ridge estimates with 1se lambda\n\n')
+abline(v =log(ridge.cv$lambda.1se), lty="dashed")
+```
+
+```{r}
+ridge.1se.coef <- coef(ridge.mod,  s=ridge.cv$lambda.1se)
+ridge.1se.coef
+```
+
+Differently from Lasso, Ridge doesn't force to zero the coefficient thus is difficult to interpret those numbers.
+
+#### min lambda
+
+```{r}
+plot(ridge.mod, xvar = "lambda", main='Path plot of the Ridge estimates with min lambda\n\n')
+abline(v =log(ridge.cv$lambda.min), lty="dashed")
+```
+
+```{r}
+ridge.min.coef <- coef(ridge.mod,  s=ridge.cv$lambda.min)
+ridge.min.coef
+```
+
+#### Model comparison
+
+```{r}
+ridge.1se.pred <- predict(ridge.mod, s=ridge.cv$lambda.1se, newdata = shootings.test, type = "response")
+ridge.min.pred <- predict(ridge.mod, s=ridge.cv$lambda.min, newdata = shootings.test, type = "response")
+```
+
+```{r, fig.width=10, fig.height=5}
+par(mfrow=c(1,2))
+
+ridge.1se.roc <- roc(shootings.test$murder_prob ~ ridge.1se.pred, plot=TRUE, print.auc=TRUE, main="1se lambda Ridge ROC curve")
+ridge.min.roc <- roc(shootings.test$murder_prob ~ ridge.min.pred, plot=TRUE, print.auc=TRUE, main="min lambda Ridge ROC curve")
+```
+The ROC curves are almost identical.
+
+```{r}
+ridge.1se.metrics <- coords(ridge.1se.roc, x="best", ret="all")
+row.names(ridge.1se.metrics) <- "ridge 1se lambda"
+
+ridge.min.metrics <- coords(ridge.min.roc, x="best", ret="all")
+row.names(ridge.min.metrics) <- "ridge min lambda"
+```
+
+```{r}
+metrics <- rbind(metrics, ridge.1se.metrics, ridge.min.metrics)
+```
+
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+"Ridge min lambda" model is the worse in terms of sensitivity; while "Ridge 1se lambda" is below average in terms of sensitivity.
+
+Confusion Matrix for `lambda.1se`:
+
+```{r}
+confusion_matrix(ridge.1se.pred, ridge.1se.metrics$threshold)
+```
+
+Confusion Matrix for `lambda.min`:
+
+```{r}
+confusion_matrix(ridge.min.pred, ridge.min.metrics$threshold)
+```
+
+# Naive Bayes
+
+```{r}
+nb.fit <- naiveBayes(formula(glm.full), data = shootings.train)
+nb.fit
+```
+
+```{r}
+nb.pred <- predict(nb.fit, newdata = shootings.test, type = "raw")
+```
+
+```{r}
+nb.roc <- roc(shootings.test$murder_prob ~ nb.pred[,2], plot=TRUE, print.auc=TRUE, main="Naive Bayes ROC curve")
+```
+
+```{r}
+nb.metrics <- coords(nb.roc, x="best", ret="all")
+row.names(nb.metrics) <- "Naive bayes"
+```
+
+```{r}
+metrics <- rbind(metrics, nb.metrics)
+```
+
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+Naive Bayes has high sensitivity but not the best one and also has a pretty okey specificity.
+
+Confusion matrix for Naive Bayes:
+
+```{r}
+confusion_matrix(nb.pred[,2], nb.metrics$threshold)
+```
+
+# GAM
+
+Now let's fit a GAM model with all predictors (interaction term included). I applied splines to all the numerical predictors.
+
+```{r}
+
+f <- update(formula(glm.full.inter), . ~ . + perp_age:vic_age + perp_sex:vic_sex -year -day_year -Latitude -Longitude + s(year) + s(day_year, bs="cc") + s(Latitude) + s(Longitude) -other_victims + s(other_victims))
+gam.fit <- gam(f, data=shootings.train, family=binomial)
+ 
+summary(gam.fit)
+```
+
+Plot of the splines effect:
+
+```{r, fig.height=10, fig.width=12}
+par(mfrow=c(2,3))
+
+for (i in 1:5){
+  plot(gam.fit, select=i, shade=TRUE, shade.col = "lightblue")
+  abline(h=0, lty="dashed")
+}
+```
+
+As we can see both for the model summary and the plots the effect of `Latitude` and `Longitude` seams linear; `year` and `day_year` seams periodic and `other_victims` is highly non linear.
+
+Now let's try fitting a GAM model now with only significant predictors:
+
+```{r}
+gam2.fit <- update(gam.fit, . ~ . - s(Latitude) -s(Longitude) - week_day -COVID_lockdown -COVID_pandemic -working_hour -vic_sex -perp_sex - perp_age:vic_age - perp_sex:vic_sex)
+ 
+summary(gam2.fit)
+```
+
+```{r, fig.height=5, fig.width=12}
+par(mfrow=c(1,3))
+
+for (i in 1:5){
+  plot(gam2.fit, select=i, shade=TRUE, shade.col = "lightblue")
+  abline(h=0, lty="dashed")
+}
+```
+The splines effects doesn't change much compared to the previews model.
+
+## Model comparison
+
+```{r}
+gam.predict <- predict(gam.fit, newdata = shootings.test, type = "response")
+gam2.predict <- predict(gam2.fit, newdata = shootings.test, type = "response")
+```
+
+```{r, fig.width=10, fig.height=5}
+par(mfrow=c(1,2))
+
+gam.roc <- roc(shootings.test$murder_prob ~ gam.predict, plot=TRUE, print.auc=TRUE, main="GAM 1 ROC curve")
+gam2.roc <- roc(shootings.test$murder_prob ~ gam2.predict, plot=TRUE, print.auc=TRUE, main="GAM 2 ROC curve")
+```
+
+The ROC curves are almost identical.
+
+```{r}
+gam.metrics <- coords(gam.roc, x="best", ret="all")
+gam2.metrics <- coords(gam2.roc, x="best", ret="all")
+
+row.names(gam.metrics) <- "GAM1"
+row.names(gam2.metrics) <- "GAM2"
+```
+
+```{r}
+metrics <- rbind(metrics, gam.metrics, gam2.metrics)
+```
+
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+"GAM1" model is the worst in terms of sensitivity but gives the best results in accuracy and specificity; while "GAM 2" is average in terms of sensitivity but gives the second best accuracy.
+
+# Conclusions
+
+Let's find the best model for all the metrics:
+
+1) specificity
+```{r}
+(metrics %>% arrange(desc(specificity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The best model in terms of specificity is "Lasso min lambda".
+
+2) sensitivity
+```{r}
+(metrics %>% arrange(desc(sensitivity)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The best model in terms of sensitivity is "Lasso 1se lambda". Unfortunately it has a not acceptable specificity; thus we still prefer the "Step model".
+
+3) accuracy
+```{r}
+(metrics %>% arrange(desc(accuracy)))[, c("specificity", "sensitivity", "accuracy")]
+```
+
+The best model in terms of accuracy is "Lasso min lambda".
+
+Since the response in unbalanced:
+
+```{r}
+print(dfSummary(shootings.test[,"murder_prob"]), method="render")
+```
+
+The best model in terms of prediction power should maximize its ability to correctly classify murders. For this reason i should choose the model with higher sensitivity and acceptable specificity (>0.5): "Step model":
+
+```{r}
+summary(glm.step)
+```
+
+```{r}
+metrics["Step model", c("specificity", "sensitivity", "accuracy")]
+```
+
+Confusion matrix:
+
+```{r}
+confusion_matrix(glm.step.pred, glm.step.metrics$threshold)
+```
+
+## Initial questions
+
+Now let's answer the project proposal questions using the best overall model effects.
+
+Let's plot the effects for all the predictors:
+
+```{r, fig.height=15, fig.width=20}
+a <- plot( effect("day_period", glm.step),rescale.axis=FALSE, ylab="Probability of murder")
+b <- plot( effect("year", glm.step),rescale.axis=FALSE, ylab="Probability of murder")
+c <- plot( effect("Latitude", glm.step),rescale.axis=FALSE, ylab="Probability of murder")
+d <- plot( effect("perp_age", glm.step), rescale.axis=FALSE, ylab="Probability of murder")
+e <-plot( effect("vic_age", glm.step), rescale.axis=FALSE, ylab="Probability of murder")
+f <- plot( effect("perp_race", glm.step), rescale.axis=FALSE, ylab="Probability of murder")
+g <-plot( effect("vic_race", glm.step), rescale.axis=FALSE, ylab="Probability of murder")
+h <-plot( effect("other_victims", glm.step), rescale.axis=FALSE, ylab="Probability of murder")
+i <-plot( effect("jurisdiction", glm.step), rescale.axis=FALSE, ylab="Probability of murder")
+
+grid.arrange(a,b,c,d,e,f,g,h,i, top=textGrob("Predictors effect plots",gp=gpar(fontsize=20,font=3)))
+```
+
+The initial question were:
+
+**Question (1)**: is survival more likely in a specific neighborhood?
+
+The model doesn't give information about neighborhood as the associated predictor was removed after the multicollinearity analysis. Thus the probability of murder across neighborhood is the same according to this model.
+
+**Question (2)**: is it more likely to survive based on gender/age of the victim? (obviously younger victims should be more likely to survive.)
+
+The model doesn't give information about victim sex as the associated predictor was removed by step function. Thus the probability of murder is the same for both male and female victims according to this model. Instead we can say something about the age of the victim: clearly there is substantial increase in murder probability when we increase the victim age from <18 to 18-24 years old but from 18-24 to 25-44 and from 25-44 to 45+ there is not a substantial increase. Also the confidence band tells us that the probability of murders from 18 to 45+ years is more or less the same.
+
+**Question (3)**: is it more likely to survive based on the victim's ethnicity?
+
+The model tells us that it is more likely for a Black Hispanic to survive compared to other races but with a very small effect. Also, watching the confidence bands the probability of murder if the victims are Asian or White or Black or White Hispanic is more or less the same.
+
+**Question (4)**: is it more likely to survive if the shooter belongs to a different/same ethnicity than the victim?
+
+The model doesn't give information about interaction between ethnicity as the associated predictor was removed by step function. Thus the probability of murder doesn't change if the shooter belongs to a different/same ethnicity than the victim according to this model.
+
+**Question (5)**: is it more likely to survive based on sex/age/ethnicity of the perpetrator?
+
+The model doesn't give information about perpetrator sex as the associated predictor was removed by step function. Thus the probability of murder is the same as the perpetrator sex changes.
+Instead we can say something about perpetrator age and ethnicity:
+
+  - as the perpetrator is older the more likely is for him/her to kill the victim.
+
+  - if the perpetrator is Asian or White it is more likely for him/her to kill the victim. Instead if the perpetrator is Black or Hispanic the murder probability doesn't change much by watching the confidence bands.
+
+**Question (6)**: Is there a trend with respect to the date on which the incident occurred?
+
+The model only give information about the year as the other date predictors were removed by step function. Unfortunately the model summary and the confidence bands of year effect tells us that this predictor is not significant.
+
+**Question (7)**: Is survival less likely in late hours?
+
+The model tells us that during the early morning and the morning it is less likely to survive a shooting incident. However the confidence band are very large thus the probability of murder could not change much.
+
+**Question (8)**: Is it more likely to survive on a weekday?
+
+The model doesn't give information about the weekday as the associated predictor was removed by step function. Thus the probability of murder is the same across weekdays according to this model.
+
+**Question (9)**: What happened during the pandemic period?
+
+The model doesn't give information about the pandemic period as the associated predictors were removed by step function. Thus the probability of murder is the same even during COVID according to this model.
+
+
+**Furthermore** the models gives us addiction information:
+
+- if in the shooting incident other victims are present then the probability of murder greatly increases.
+
+- if the jurisdiction is patrol the probability of murder increases.
+
+- if the Latitude increases the probability of murder increases. The model summary tells us that this predictor is slightly significant.
