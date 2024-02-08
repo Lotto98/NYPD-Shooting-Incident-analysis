@@ -1,5 +1,7 @@
 # NYPD-Shooting-Incident-analysis
 
+Project for STATISTICAL INFERENCE AND LEARNING exam. (master's degree)
+
 ## Description of the data
 "List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
 
